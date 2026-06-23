@@ -52,9 +52,11 @@ fn get_trading_summary_url(config: &Config, account: Account) -> Result<String> 
         return Err(anyhow::anyhow!("Account is not a trading account"));
     }
 
+    // position=INSTANT : position TEMPS REEL (inclut les ordres executes non encore
+    // regles), contrairement a ACCOUNTING (comptable, fige au dernier reglement J+2).
     Ok(
         format!(
-            "{}/accounts/summary/{}?_host=tradingboard.boursobank.com&position=ACCOUNTING&responseFormat=true",
+            "{}/accounts/summary/{}?_host=tradingboard.boursobank.com&position=INSTANT&responseFormat=true",
             get_trading_base_url(config)?,
             account.id
         )

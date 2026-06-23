@@ -108,6 +108,11 @@ async fn main() -> Result<()> {
                     // )
                     .subcommand_required(true)
                 )
+                .subcommand(
+                    Command::new("summary")
+                        .about("Get the trading account summary (cash, positions, prices) as JSON. Read-only, places no order.")
+                        .arg(account_arg.clone())
+                )
                 .subcommand_required(true)
         )
         .subcommand(
