@@ -362,6 +362,21 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
                         _ => unreachable!(),
                     }
                 }
+                Some(("summary", summary_matches)) => {
+                    let account_id = summary_matches
+                        .get_one::<String>("account")
+                        .map(|s| s.as_str())
+                        .unwrap();
+
+                    // Get account from previously fetched trading accounts
+                    let account = accounts
+                        .iter()
+                        .find(|a| a.id == account_id)
+                        .context("Account not found. Are you sure you have access to it? Run `bourso accounts` to list your accounts")?;
+
+                    let summary = web_client.get_trading_summary(account.clone()).await?;
+                    println!("{}", serde_json::to_string(&summary)?);
+                }
                 _ => unreachable!(),
             }
         }
