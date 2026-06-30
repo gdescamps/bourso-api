@@ -418,7 +418,7 @@ pub struct AccountFiscality {
     #[serde(rename = "latGL")]
     pub lat_gl: f64,
     #[serde(rename = "realGL")]
-    pub real_gl: i64,
+    pub real_gl: f64,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -678,4 +678,29 @@ pub struct ActionApi {
 pub struct ActionApiParams {
     pub account_type: String,
     pub account_key: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the 2026-06-30 incident: once the PEA has a realized
+    /// loss, the `order/prepare` response returns `accountFiscality.realGL` as a
+    /// FLOAT (e.g. -20.84). The field was typed `i64`, so `order` crashed with
+    /// "invalid type: floating point `-20.84`, expected i64" and the morning buy
+    /// never went through. Every monetary field must deserialize as `f64`.
+    ///
+    /// The fixture below is a verbatim capture of a real PEA `order/prepare`
+    /// response (logs/cron_pea.log, 2026-06-30), so it also guards the whole
+    /// `OrderPrepareResponse` shape against future field-type drift.
+    #[test]
+    fn order_prepare_deserializes_with_float_realgl() {
+        let json = r#"{"resourceId":"59a9a334b0394","isPcc":false,"pccRights":{"allocate":false,"force":false},"hasRightToAssign":false,"hasRightToForce":false,"position":{"cash":679.16,"srdCoverage":679.16,"quantity":0,"srdQuantity":0},"account":{"hasPfm":false,"rib":"40618 80610 00088465900 69","iban":"FR7640618806100008846590069","bic":"BOUSFRPPXXX","accountNumber":"00088465900","name":"PEA DESCAMPS","balance":679.16,"internal":true,"currency":"EUR","type":"PEA","professional":false,"subtype":"OMS_ACCOUNT_ISA","role":"titular","bankId":"1","bankName":"BoursoBank","cashOut":0,"cashIn":1,"accountKey":"faab190372918f26c5d2d518fd307d05","pfmAccountKey":null,"typeCategory":"TRADING","hasUnregularOperations":false,"shortName":"PEA DESCAMPS","minor":false,"contactIdOwner":null,"isKADOR":false,"profileType":null,"details":{"firstCashTransferDate":"2026-06-16","gainLossesPercent":0,"doneGainLossesPercent":0,"cash":679.16,"gainLosses":0,"doneGainLosses":0,"clearanceBalance":0,"stocks":0,"date":"2026-06-30","isDmc":false,"nextLiquidationDate":"2026-07-28"},"hasIncident":false},"accountFiscality":{"latGL":0,"realGL":-20.84},"accountFeesProfile":"DECOUVERTE","pendingExecutedOrders":{"pending":0,"executed":3},"acceptabilityMessages":[],"symbol":{"exchangeLabel":"Euronext Paris","symbol":"1rTPUST","nbDecimals":4,"currency":"EUR","label":"Amundi PEA Nasdaq-100 UCITS ETF Acc","isin":"FR0011871110","lastPrice":105.06,"fundMorningStarPdfUrl":"https:\/\/doc.morningstar.com\/LatestDoc.aspx?clientid=boursorama&key=507703e53b7dec23&language=454&investmentid=F00000TNQV&documenttype=299&market=1443&investmenttype=1&frame=0","directIssuerKidUrl":null,"priipsKidUrl":null,"allowTacticalOrders":true,"details":{"opcvm":false,"affiliated":false,"directIssuer":false,"tracker":true,"turbo":false,"warrant":false,"euronext":true},"extendedHours":{"associatedSymbol":"","loxSymbol":"","isEligible":false,"loxExchangeId":"","isOst":false,"isOpen":false}},"prepareOrderData":{"minExpireTm":"2026-06-30","maxExpireTm":"2027-06-29","invalidDatesList":["2026-12-25","2027-01-01"],"listOrdType":{"b":["ATP","LIM","STP","SLM","TSO"],"s":["ATP","LIM","STP","SLM","TSO"]},"listRiskMd":["CPT"],"sideList":["B","S"],"configOrdType":{"ATP":"Au marché (ex ATP)","LIM":"Ordre limité","STP":"Seuil de déclenchement","SLM":"Plage de déclenchement","TSO":"Ordre Suiveur","OCO":"Ordre Alternatif","TAL":"Trade At Last"}},"prefillOrderData":{"orderRiskMode":"CPT","orderAmount":105.06,"orderQuantity":null,"orderPriceLimit":null,"orderType":"LIM","orderValidity":"2026-06-30","alternativeOrder":{"orderType":"LIM"},"securedOrder":{"orderType":"LIM"}},"opcvmMessage":"","diciMessage":"\n     En confirmant le passage d'ordre, je reconnais avoir pris connaissance du <a href=\"https:\/\/doc.morningstar.com\/LatestDoc.aspx?clientid=boursorama&key=507703e53b7dec23&language=454&investmentid=F00000TNQV&documenttype=299&market=1443&investmenttype=1&frame=0\" target=\"_blank\" rel=\"noreferrer noopener\">DIC<\/a>.\n    ","performanceUrl":"https:\/\/www.boursobank.com\/static\/file\/default\/179864425\/i\/bourse\/performance.jpg","executionPolicyUrl":"https:\/\/bourse.boursobank.com\/bourse\/politique-execution\/"}"#;
+
+        let resp: OrderPrepareResponse = serde_json::from_str(json)
+            .expect("order/prepare must deserialize when realGL is a float");
+        assert_eq!(resp.account_fiscality.real_gl, -20.84);
+        assert_eq!(resp.account_fiscality.lat_gl, 0.0);
+        assert_eq!(resp.position.cash, 679.16);
+    }
 }
