@@ -48,6 +48,20 @@ impl BoursoWebClient {
         let last_price = response.symbol.last_price;
         let nb_decimals = response.symbol.nb_decimals;
 
+        // The tolerance is a buffer *magnitude*: the direction is chosen by side
+        // (above last price for a buy, below for a sell). A negative value would
+        // flip the limit to the wrong side and likely never fill — reject it.
+        if let Some(tol) = options.price_tolerance {
+            if tol < 0.0 {
+                return Err(anyhow::anyhow!(
+                    "Price tolerance must be >= 0 (got {}%). The buffer is applied above \
+                     the last price for a buy and below it for a sell; use --limit for an \
+                     explicit price.",
+                    tol * 100.0
+                ));
+            }
+        }
+
         // Resolve the order type: explicit override, else the prefill default (LIM).
         let order_type = options.order_type.unwrap_or(order_data.order_type);
 
