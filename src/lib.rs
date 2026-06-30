@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use bourso_api::{
     account::{Account, AccountKind},
     client::{
-        trade::{order::OrderSide, tick::QuoteTab},
+        trade::{
+            order::{OrderKind, OrderOptions, OrderSide},
+            tick::QuoteTab,
+        },
         transfer::TransferProgress,
         BoursoWebClient,
     },
@@ -281,8 +284,40 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
                                 .map(|s| s.as_str())
                                 .unwrap();
 
+                            // Optional overrides (default: a day LIM order at the
+                            // quoted price, i.e. the previous behaviour).
+                            let order_type = match new_order_matches
+                                .get_one::<String>("order-type")
+                                .map(|s| s.as_str())
+                            {
+                                Some("ATP") => Some(OrderKind::Market),
+                                Some("LIM") => Some(OrderKind::Limit),
+                                _ => None,
+                            };
+                            let price_limit =
+                                new_order_matches.get_one::<f64>("limit").copied();
+                            // CLI tolerance is a percent; convert to a fraction.
+                            let price_tolerance = new_order_matches
+                                .get_one::<f64>("tolerance")
+                                .map(|pct| pct / 100.0);
+                            let validity =
+                                new_order_matches.get_one::<String>("validity").cloned();
+
+                            let options = OrderOptions {
+                                order_type,
+                                price_limit,
+                                price_tolerance,
+                                validity,
+                            };
+
                             let _ = web_client
-                                .order(side.to_owned(), account, symbol, quantity.to_owned(), None)
+                                .order(
+                                    side.to_owned(),
+                                    account,
+                                    symbol,
+                                    quantity.to_owned(),
+                                    options,
+                                )
                                 .await?;
                         }
                         _ => unreachable!(),

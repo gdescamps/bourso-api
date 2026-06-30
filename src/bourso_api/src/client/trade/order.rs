@@ -19,7 +19,8 @@ impl BoursoWebClient {
     /// * `account` - Account to use. Must be a trading account
     /// * `symbol` - Symbol to trade
     /// * `quantity` - Quantity to trade
-    /// * `order_data` - Order data. If not set, will be fetched from Bourso API and filled with the given parameters
+    /// * `options` - Order options (type, price limit/tolerance, validity). Any
+    ///   field left to `None` falls back to the prefilled data from Bourso API.
     ///
     /// # Returns
     /// Order ID and order price limit
@@ -30,7 +31,7 @@ impl BoursoWebClient {
         account: &Account,
         symbol: &str,
         quantity: usize,
-        order_data: Option<OrderData>,
+        options: OrderOptions,
     ) -> Result<(String, Option<f64>)> {
         if account.kind != AccountKind::Trading {
             return Err(anyhow::anyhow!("Account is not a trading account"));
@@ -40,42 +41,57 @@ impl BoursoWebClient {
 
         debug!("Prepare data {:#?}", response);
 
-        // Either the order data set by the user
-        // or a prefilled data object fetched from Bourso API
-        let mut order_data = match order_data {
-            Some(data) => data,
-            None => response.prefill_order_data.clone(),
-        };
+        // Start from the prefilled data fetched from Bourso API, then apply the
+        // user overrides (order type, price limit/tolerance, validity).
+        let mut order_data = response.prefill_order_data.clone();
 
         let last_price = response.symbol.last_price;
+        let nb_decimals = response.symbol.nb_decimals;
 
-        // As either the data received by Bourso API or the data given by the user can contain
-        // and order quantity set to none, we forcefully define it here
-        if order_data.order_quantity.is_none() {
-            order_data.order_quantity = Some(quantity);
+        // Resolve the order type: explicit override, else the prefill default (LIM).
+        let order_type = options.order_type.unwrap_or(order_data.order_type);
+
+        // The venue advertises which order types it accepts for each side. Refuse
+        // up front with a clear message rather than letting the /check endpoint
+        // reject the order with an opaque error.
+        let allowed = match side {
+            OrderSide::Buy => &response.prepare_order_data.list_ord_type.b,
+            OrderSide::Sell => &response.prepare_order_data.list_ord_type.s,
+        };
+        if !allowed.contains(&order_type) {
+            return Err(anyhow::anyhow!(
+                "Order type {:?} not accepted for {:?} on {} (allowed: {:?})",
+                order_type,
+                side,
+                symbol,
+                allowed
+            ));
         }
 
-        if order_data.order_price_limit.is_none() && order_data.order_type == OrderKind::Limit {
-            if order_data.order_amount.is_some() {
-                // Use quoted market price or given user price
-                order_data.order_price_limit = order_data.order_amount;
-            } else {
-                // Use the last price fetched
-                order_data.order_price_limit = Some(last_price);
+        order_data.order_type = order_type;
+        order_data.order_quantity = Some(quantity);
+        order_data.order_side = Some(side);
+        order_data.order_price_limit = resolve_price_limit(
+            side,
+            order_type,
+            last_price,
+            nb_decimals,
+            order_data.order_amount,
+            &options,
+        );
+
+        // Validity / expiration date. A user-provided date lets an order posted
+        // off-hours stay valid for the next session(s); otherwise keep the API
+        // default (a day order for the upcoming session).
+        match &options.validity {
+            Some(validity) => {
+                order_data.order_expiration_date = Some(validity.clone());
+                order_data.order_validity = Some(validity.clone());
             }
-        } // else TODO: other types of orders data definition
-
-        if order_data.order_side.is_none() {
-            order_data.order_side = Some(side);
-        }
-
-        if order_data.order_expiration_date.is_none() {
-            // Set expiration date to date given by the API
-            order_data.order_expiration_date = response.prefill_order_data.order_validity;
-        } else {
-            // Set order_data.order_expiration_date to today
-            order_data.order_expiration_date =
-                Some(chrono::Utc::now().format("%Y-%m-%d").to_string());
+            None => {
+                order_data.order_expiration_date =
+                    response.prefill_order_data.order_validity.clone();
+            }
         }
 
         order_data.resource_id = Some(response.resource_id);
@@ -92,10 +108,12 @@ impl BoursoWebClient {
             quantity,
             symbol,
             order_id = response.order_id,
+            order_type = ?order_type,
             order_price_limit = order_data.order_price_limit,
-            "Order for {} {} successfully passed with ID {} at price {:?} ✅",
+            "Order for {} {} ({:?}) successfully passed with ID {} at price {:?} ✅",
             quantity,
             symbol,
+            order_type,
             response.order_id,
             order_data.order_price_limit
         );
@@ -254,6 +272,63 @@ impl BoursoWebClient {
 
         Ok(())
     }
+}
+
+/// User-supplied overrides for a new order.
+///
+/// Every field is optional; anything left to `None` falls back to the prefilled
+/// data returned by the `/order/prepare` endpoint (a day LIM order at the quoted
+/// price). This is what lets the CLI post a market order (ATP) or a limit order
+/// with a price tolerance — typically outside market hours, where the order
+/// joins the next opening auction.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OrderOptions {
+    /// Order type (LIM, ATP, ...). Defaults to the prefill type (LIM).
+    pub order_type: Option<OrderKind>,
+    /// Explicit limit price for a LIM order. Takes precedence over `price_tolerance`.
+    pub price_limit: Option<f64>,
+    /// Price tolerance as a fraction for a LIM order (e.g. `0.02` = 2%). The limit
+    /// becomes `last_price * (1 + tol)` for a buy and `last_price * (1 - tol)` for
+    /// a sell — a buffer so an order posted off-hours still fills through a
+    /// reasonable opening gap without chasing a runaway price.
+    pub price_tolerance: Option<f64>,
+    /// Order validity / expiration date in "YYYY-MM-DD" format.
+    pub validity: Option<String>,
+}
+
+/// Round a price to the venue tick precision (`nb_decimals` from the symbol).
+fn round_price(price: f64, nb_decimals: i64) -> f64 {
+    let factor = 10f64.powi(nb_decimals.max(0) as i32);
+    (price * factor).round() / factor
+}
+
+/// Compute the `orderPriceLimit` to submit.
+///
+/// Returns `None` for non-limit orders (a market/ATP order carries no price).
+/// For a limit order the precedence is: explicit `price_limit` → `price_tolerance`
+/// buffer around `last_price` → the quoted `prefill_amount` → `last_price`.
+fn resolve_price_limit(
+    side: OrderSide,
+    order_type: OrderKind,
+    last_price: f64,
+    nb_decimals: i64,
+    prefill_amount: Option<f64>,
+    opts: &OrderOptions,
+) -> Option<f64> {
+    if order_type != OrderKind::Limit {
+        return None;
+    }
+    if let Some(px) = opts.price_limit {
+        return Some(round_price(px, nb_decimals));
+    }
+    if let Some(tol) = opts.price_tolerance {
+        let raw = match side {
+            OrderSide::Buy => last_price * (1.0 + tol),
+            OrderSide::Sell => last_price * (1.0 - tol),
+        };
+        return Some(round_price(raw, nb_decimals));
+    }
+    Some(round_price(prefill_amount.unwrap_or(last_price), nb_decimals))
 }
 
 fn get_order_url(config: &Config) -> Result<String> {
@@ -702,5 +777,67 @@ mod tests {
         assert_eq!(resp.account_fiscality.real_gl, -20.84);
         assert_eq!(resp.account_fiscality.lat_gl, 0.0);
         assert_eq!(resp.position.cash, 679.16);
+    }
+
+    #[test]
+    fn round_price_respects_decimals() {
+        assert_eq!(round_price(105.06789, 4), 105.0679);
+        assert_eq!(round_price(105.06789, 2), 105.07);
+        assert_eq!(round_price(105.0, 0), 105.0);
+    }
+
+    #[test]
+    fn limit_buy_tolerance_adds_buffer() {
+        let opts = OrderOptions {
+            price_tolerance: Some(0.02),
+            ..Default::default()
+        };
+        let px = resolve_price_limit(OrderSide::Buy, OrderKind::Limit, 100.0, 4, None, &opts);
+        assert_eq!(px, Some(102.0));
+    }
+
+    #[test]
+    fn limit_sell_tolerance_subtracts_buffer() {
+        let opts = OrderOptions {
+            price_tolerance: Some(0.02),
+            ..Default::default()
+        };
+        let px = resolve_price_limit(OrderSide::Sell, OrderKind::Limit, 100.0, 4, None, &opts);
+        assert_eq!(px, Some(98.0));
+    }
+
+    #[test]
+    fn explicit_limit_overrides_tolerance() {
+        let opts = OrderOptions {
+            price_limit: Some(99.5),
+            price_tolerance: Some(0.02),
+            ..Default::default()
+        };
+        let px = resolve_price_limit(OrderSide::Buy, OrderKind::Limit, 100.0, 4, None, &opts);
+        assert_eq!(px, Some(99.5));
+    }
+
+    #[test]
+    fn market_order_carries_no_price_limit() {
+        let opts = OrderOptions {
+            order_type: Some(OrderKind::Market),
+            price_tolerance: Some(0.02),
+            ..Default::default()
+        };
+        let px = resolve_price_limit(OrderSide::Buy, OrderKind::Market, 100.0, 4, None, &opts);
+        assert_eq!(px, None);
+    }
+
+    #[test]
+    fn limit_without_options_falls_back_to_amount_then_last() {
+        let opts = OrderOptions::default();
+        assert_eq!(
+            resolve_price_limit(OrderSide::Buy, OrderKind::Limit, 100.0, 4, Some(105.06), &opts),
+            Some(105.06)
+        );
+        assert_eq!(
+            resolve_price_limit(OrderSide::Buy, OrderKind::Limit, 100.0, 4, None, &opts),
+            Some(100.0)
+        );
     }
 }
