@@ -97,9 +97,37 @@ async fn main() -> Result<()> {
                                 .required(true)
                                 .value_parser(clap::value_parser!(usize))
                             )
-                            // Price limit
-                            // Validity date
-                            // TODO: handle other types of orders
+                            .arg(
+                                Arg::new("order-type")
+                                .long("order-type")
+                                .help("Order type. Default: LIM")
+                                .required(false)
+                                .value_parser([
+                                    PossibleValue::new("LIM").help("Limit order (default)"),
+                                    PossibleValue::new("ATP").help("Market order ('au marché') — joins the next auction/open. Use to post off-hours."),
+                                ])
+                            )
+                            .arg(
+                                Arg::new("limit")
+                                .long("limit")
+                                .help("Explicit limit price for a LIM order (overrides --tolerance)")
+                                .required(false)
+                                .value_parser(clap::value_parser!(f64))
+                            )
+                            .arg(
+                                Arg::new("tolerance")
+                                .long("tolerance")
+                                .help("Price tolerance in percent for a LIM order: limit = last ±tol% (buy:+, sell:-), e.g. '2' for 2%. Buffers an opening gap when posting off-hours.")
+                                .required(false)
+                                .value_parser(clap::value_parser!(f64))
+                            )
+                            .arg(
+                                Arg::new("validity")
+                                .long("validity")
+                                .help("Order validity / expiration date as YYYY-MM-DD. Lets an order posted off-hours stay valid for the next session(s).")
+                                .required(false)
+                            )
+                            // TODO: handle other types of orders (STP, SLM, TSO, OCO)
                     )
                     // .subcommand(
                     //    Command::new("cancel")
