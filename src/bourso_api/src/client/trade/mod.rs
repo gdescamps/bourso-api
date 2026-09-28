@@ -90,8 +90,10 @@ pub struct PositionSummary {
     pub var: SummaryValue,
     pub gain_loss: SummaryValue,
     pub gain_loss_percent: SummaryValue,
-    /// YYYY-MM-DD
-    pub last_movement_date: String,
+    /// YYYY-MM-DD. Absent from the Bourso response while a movement on the
+    /// line is in progress (e.g. the day of a sale, until settlement) — keep
+    /// it optional so `trade summary` does not fail on such days.
+    pub last_movement_date: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
