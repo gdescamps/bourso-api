@@ -483,22 +483,24 @@ pub struct PrepareOrderAccount {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Details {
-    /// The first time a cash transfer was made to the account
-    pub first_cash_transfer_date: String,
+    /// The first time a cash transfer was made to the account.
+    /// All these fields are `null` on a freshly opened PEA that never traded
+    /// (`extendedType: "YOUNG_PEA"`, 2026-09-30) — hence the `Option`s.
+    pub first_cash_transfer_date: Option<String>,
     /// Gain/Losses in as a float value
-    pub gain_losses_percent: f64,
-    pub done_gain_losses_percent: f64,
+    pub gain_losses_percent: Option<f64>,
+    pub done_gain_losses_percent: Option<f64>,
     /// Current cash balance
-    pub cash: f64,
+    pub cash: Option<f64>,
     /// Current gain/losses in euros
-    pub gain_losses: f64,
-    pub done_gain_losses: f64,
-    pub clearance_balance: f64,
+    pub gain_losses: Option<f64>,
+    pub done_gain_losses: Option<f64>,
+    pub clearance_balance: Option<f64>,
     /// The account stocks value in euros
-    pub stocks: f64,
+    pub stocks: Option<f64>,
     /// Today's date in format "2022-11-01"
-    pub date: String,
-    pub next_liquidation_date: String,
+    pub date: Option<String>,
+    pub next_liquidation_date: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -791,6 +793,21 @@ mod tests {
         assert_eq!(resp.account_fiscality.real_gl, -20.84);
         assert_eq!(resp.account_fiscality.lat_gl, 0.0);
         assert_eq!(resp.position.cash, 679.16);
+    }
+
+    #[test]
+    fn order_prepare_deserializes_fresh_pea_with_null_details() {
+        // PEA neuf jamais alimente par virement / jamais traite : Bourso renvoie null
+        // pour tous les champs de account.details sauf isDmc / nextLiquidationDate
+        // (constate le 2026-09-30, extendedType YOUNG_PEA).
+        let json = r#"{"resourceId":"e339d9b2db77b","isPcc":false,"pccRights":{"allocate":false,"force":false},"hasRightToAssign":false,"hasRightToForce":false,"position":{"cash":300,"srdCoverage":300,"quantity":0,"srdQuantity":0},"account":{"hasPfm":false,"rib":"00000 00000 00000000000 00","iban":"FR7600000000000000000000000","bic":"BOUSFRPPXXX","accountNumber":"00000000000","name":"PEA TEST","balance":0,"internal":true,"currency":"EUR","type":"PEA","professional":false,"subtype":"OMS_ACCOUNT_ISA","role":"titular","bankId":"1","bankName":"BoursoBank","cashOut":0,"cashIn":1,"accountKey":"00000000000000000000000000000000","pfmAccountKey":null,"typeCategory":"TRADING","hasUnregularOperations":false,"shortName":"PEA TEST","minor":false,"contactIdOwner":null,"isKADOR":false,"profileType":null,"extendedType":"YOUNG_PEA","details":{"firstCashTransferDate":null,"gainLossesPercent":null,"doneGainLossesPercent":null,"cash":null,"gainLosses":null,"doneGainLosses":null,"clearanceBalance":null,"stocks":null,"date":null,"isDmc":false,"nextLiquidationDate":"2026-10-27"},"hasIncident":false},"accountFiscality":{"latGL":0,"realGL":0},"accountFeesProfile":"DECOUVERTE","pendingExecutedOrders":{"pending":0,"executed":0},"acceptabilityMessages":[],"actions":{"alimentation":{"label":"Alimentation CB","featureId":"x","web":"https:\/\/clients.boursobank.com\/x","api":{"href":"\/","method":"GET","params":{"accountType":"pea","accountKey":"0"}},"disabled":false,"contextualName":"alimentation"},"cashTransfer":null,"executionPolicy":{"label":null,"featureId":"y","web":"https:\/\/bourse.boursobank.com\/y","api":null,"disabled":false,"contextualName":"executionpolicy"}},"symbol":{"exchangeLabel":"Euronext Paris","symbol":"1rTLQQ","nbDecimals":4,"currency":"EUR","label":"Amundi Nasdaq-100 Daily (2x) Leveraged UCITS ETF Acc","isin":"FR0010342592","lastPrice":10.192,"fundMorningStarPdfUrl":"https:\/\/doc.morningstar.com\/x","directIssuerKidUrl":null,"priipsKidUrl":null,"allowTacticalOrders":true,"details":{"opcvm":false,"affiliated":false,"directIssuer":false,"tracker":true,"turbo":false,"warrant":false,"euronext":true},"extendedHours":{"associatedSymbol":"1rTLQQ","loxSymbol":"6rPFR0010342592","isEligible":true,"loxExchangeId":"LOX25","isOst":false,"isOpen":false}},"prepareOrderData":{"minExpireTm":"2026-09-30","maxExpireTm":"2027-03-31","invalidDatesList":["2026-12-25","2027-01-01"],"listOrdType":{"b":["ATP","LIM","STP","SLM","TSO"],"s":["ATP","LIM","STP","SLM","TSO"]},"listRiskMd":["CPT"],"sideList":["B","S"],"configOrdType":{"ATP":"Au marché (ex ATP)","LIM":"Ordre limité","STP":"Seuil de déclenchement","SLM":"Plage de déclenchement","TSO":"Ordre Suiveur","OCO":"Ordre Alternatif","TAL":"Trade At Last"}},"prefillOrderData":{"orderRiskMode":"CPT","orderAmount":10.192,"orderQuantity":null,"orderPriceLimit":null,"orderType":"LIM","orderValidity":"2026-09-30","alternativeOrder":{"orderType":"LIM"},"securedOrder":{"orderType":"LIM"}},"opcvmMessage":"","diciMessage":"","performanceUrl":"https:\/\/www.boursobank.com\/x.jpg","executionPolicyUrl":"https:\/\/bourse.boursobank.com\/bourse\/politique-execution\/"}"#;
+
+        let resp: OrderPrepareResponse = serde_json::from_str(json)
+            .expect("order/prepare must deserialize on a fresh PEA with null details");
+        assert_eq!(resp.position.cash, 300.0);
+        assert_eq!(resp.account.details.first_cash_transfer_date, None);
+        assert_eq!(resp.account.details.cash, None);
+        assert_eq!(resp.symbol.last_price, 10.192);
     }
 
     #[test]
